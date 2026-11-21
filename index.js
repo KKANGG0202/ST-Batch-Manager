@@ -62,6 +62,7 @@ const defaultSettings = Object.freeze({
     autoReload: false, // false: show a reload button, true: reload 3s after a clean run
     ttlHours: 6,       // how long update-check results are remembered
     autoCheck: true,   // check for updates in the background when the cart opens
+    notes: {},         // the user's own memo per extension: { extension name: text }
 });
 
 const state = {
@@ -102,7 +103,23 @@ function getSettings() {
             settings[key] = structuredClone(defaultSettings[key]);
         }
     }
+    if (!settings.notes || typeof settings.notes !== 'object' || Array.isArray(settings.notes)) settings.notes = {};
     return settings;
+}
+
+const NOTE_MAX = 200;
+
+function getNote(name) {
+    const note = getSettings().notes[name];
+    return typeof note === 'string' ? note : '';
+}
+
+function setNote(name, text) {
+    const settings = getSettings();
+    const value = String(text || '').replace(/\s+/g, ' ').trim().slice(0, NOTE_MAX);
+    if (value) settings.notes[name] = value;
+    else delete settings.notes[name];
+    SillyTavern.getContext().saveSettingsDebounced();
 }
 
 function esc(text) {
@@ -272,7 +289,7 @@ function matchesState(item) {
 function visibleItems() {
     const query = state.search.trim().toLowerCase();
     return state.items.filter(item => {
-        if (query && !item.title.toLowerCase().includes(query) && !item.folder.toLowerCase().includes(query)) return false;
+        if (query && !item.title.toLowerCase().includes(query) && !item.folder.toLowerCase().includes(query) && !getNote(item.name).toLowerCase().includes(query)) return false;
         // "in the cart" always shows everything that was picked, whatever the other switches say
         if (state.filter === 'cart') return state.cart.has(item.name);
         if (!item.thirdParty && !state.showSystem) return false;
@@ -728,7 +745,7 @@ function createRoot() {
         el('button', { cls: 'extcart-btn extcart-icononly', type: 'button', title: '닫기', 'aria-label': '닫기', onclick: () => closeCart() }, [icon('fa-xmark')]),
     ]);
 
-    const search = el('input', { cls: 'text_pole extcart-search', type: 'search', placeholder: '확장 이름 검색', 'aria-label': '확장 이름 검색' });
+    const search = el('input', { cls: 'text_pole extcart-search', type: 'search', placeholder: '확장 이름·메모 검색', 'aria-label': '확장 이름 또는 메모 검색' });
     search.addEventListener('input', () => {
         state.search = search.value;
         renderList();
@@ -964,6 +981,7 @@ function buildRow(item) {
     else if (progress === 'fail') meta.append(el('span', { cls: 'extcart-tag extcart-tag-fail', text: '실패' }));
     else if (action) meta.append(el('span', { cls: `extcart-tag extcart-tag-pick extcart-pick-${action}`, text: `담음: ${ACTION_LABEL[action]}` }));
 
+    const note = getNote(item.name);
     const toggleAction = item.disabled ? 'enable' : 'disable';
     const acts = el('div', { cls: 'extcart-acts' }, [
         actionButton(item, 'update', 'fa-arrow-up', '업데이트'),
@@ -973,7 +991,11 @@ function buildRow(item) {
     ]);
 
     const row = el('div', { cls: `extcart-row${hasUpdate(item) ? ' extcart-row-update' : ''}${action ? ' extcart-picked' : ''}${item.disabled ? ' extcart-row-off' : ''}` }, [
-        el('div', { cls: 'extcart-info' }, [el('div', { cls: 'extcart-name', text: item.title, title: item.folder }), meta]),
+        el('div', { cls: 'extcart-info' }, [
+            el('div', { cls: 'extcart-name', text: item.title, title: item.folder }),
+            meta,
+            note ? el('div', { cls: 'extcart-note', text: note, title: note }) : null,
+        ]),
         acts,
     ]);
     row.dataset.name = item.name;
@@ -1051,6 +1073,8 @@ function showDetails(name) {
     const info = state.versions[item.name] || {};
     const body = [];
 
+    const note = getNote(item.name);
+    if (note) body.push(infoLine('메모', note));
     body.push(infoLine('폴더', item.folder));
     if (item.manifest.version) body.push(infoLine('버전', `v${item.manifest.version}`));
     if (item.manifest.author) body.push(infoLine('만든 이', String(item.manifest.author)));
@@ -1117,6 +1141,19 @@ function showDetails(name) {
             },
         }, [icon('fa-rotate'), el('span', { text: '이 확장만 업데이트 확인' })]));
     }
+    // Memo is optional, so it only takes one button here; the text is typed in a small popup
+    buttons.append(el('button', {
+        cls: 'extcart-btn extcart-wide',
+        type: 'button',
+        onclick: async () => {
+            const { Popup } = SillyTavern.getContext();
+            const value = await Popup.show.input('메모', `${esc(item.title)} — 뭐 하는 확장인지 적어 두세요. 비워서 저장하면 메모가 지워져요.`, getNote(item.name));
+            if (typeof value !== 'string') return; // cancelled
+            setNote(item.name, value);
+            updateRow(item.name);
+            if (state.open) showDetails(item.name);
+        },
+    }, [icon('fa-pen'), el('span', { text: note ? '메모 고치기' : '메모 적기' })]));
     body.push(buttons);
     openSheet(item.title, body);
 }

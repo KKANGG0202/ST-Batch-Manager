@@ -359,6 +359,16 @@ body.salty #extcart_root {
     font-weight: 600;
 }
 
+/* The user's own memo: one quiet line under the name */
+#extcart_root .extcart-row .extcart-note {
+    margin-top: 2px;
+    font-size: 12.5px;
+    color: var(--xc-muted);
+    white-space: nowrap !important;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 #extcart_root .extcart-row-off .extcart-name {
     opacity: 0.6;
 }
