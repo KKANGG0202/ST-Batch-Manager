@@ -28,6 +28,8 @@ const CACHE_KEY = 'extcart_version_cache_v1';
 const THIRD_PARTY = 'third-party/';
 const POOL_SIZE = 3;  // how many updates run at the same time
 const CHECK_POOL_SIZE = 6; // how many update checks run at the same time (ST itself uses 5)
+const PLUGIN_CHECK_POOL_SIZE = 8; // with the optional server plugin each check is lighter
+const PLUGIN_BASE = '/api/plugins/ext-cart'; // optional server plugin (server-plugin folder)
 const VIEW_KEY = 'extcart_view_v1'; // remembered filter of this browser
 const HOOK_TIMEOUT = 5000;
 
@@ -47,6 +49,8 @@ const ACTION_LABEL = Object.freeze({
     enable: '켜기',
     disable: '끄기',
     delete: '삭제',
+    force: '강제 업데이트',
+    rollback: '이전 버전으로',
     reinstall: '다시 설치',
 });
 
@@ -54,7 +58,6 @@ const defaultSettings = Object.freeze({
     autoReload: false, // false: show a reload button, true: reload 3s after a clean run
     ttlHours: 6,       // how long update-check results are remembered
     autoCheck: true,   // check for updates in the background when the cart opens
-    presets: [],       // [{ name, disabled: string[], known: string[] }]
 });
 
 const state = {
@@ -68,7 +71,11 @@ const state = {
     progress: new Map(),  // extension name -> 'run' | 'ok' | 'fail'
     removed: new Set(),   // deleted during this page session (still listed by ST until reload)
     versions: {},         // extension name -> version info
-    filter: 'all',
+    plugin: null,         // probe answer of the optional server plugin, or null when it is not installed
+    pluginProbed: false,
+    filter: 'all',        // 'all' | 'update' | 'cart'
+    showOn: true,         // show enabled extensions
+    showOff: true,        // show disabled extensions
     showSystem: false,
     search: '',
     needsReload: false,
@@ -91,7 +98,6 @@ function getSettings() {
             settings[key] = structuredClone(defaultSettings[key]);
         }
     }
-    if (!Array.isArray(settings.presets)) settings.presets = [];
     return settings;
 }
 
@@ -164,14 +170,20 @@ function saveCache() {
 function loadView() {
     try {
         const saved = JSON.parse(localStorage.getItem(VIEW_KEY) || '{}');
-        if (['all', 'update', 'on', 'off', 'cart'].includes(saved.filter)) state.filter = saved.filter;
+        if (['all', 'update', 'cart'].includes(saved.filter)) state.filter = saved.filter;
+        state.showOn = saved.showOn !== false;
+        state.showOff = saved.showOff !== false;
+        // older versions stored "on" / "off" as the filter itself
+        if (saved.filter === 'on') state.showOff = false;
+        if (saved.filter === 'off') state.showOn = false;
+        if (!state.showOn && !state.showOff) state.showOn = state.showOff = true;
         state.showSystem = Boolean(saved.showSystem);
     } catch { /* keep defaults */ }
 }
 
 function saveView() {
     try {
-        localStorage.setItem(VIEW_KEY, JSON.stringify({ filter: state.filter, showSystem: state.showSystem }));
+        localStorage.setItem(VIEW_KEY, JSON.stringify({ filter: state.filter, showOn: state.showOn, showOff: state.showOff, showSystem: state.showSystem }));
     } catch { /* not important */ }
 }
 
@@ -226,6 +238,8 @@ function can(item, action) {
     const info = state.versions[item.name];
     switch (action) {
         case 'update': return item.canManage && !(info && info.noGit);
+        case 'force': return item.canManage && Boolean(state.plugin) && !(info && info.noGit);
+        case 'rollback': return item.canManage && Boolean(state.plugin) && Boolean(info && info.canRollback);
         case 'enable': return item.disabled;
         case 'disable': return !item.disabled && !item.isSelf;
         case 'delete': return item.canManage;
@@ -238,25 +252,29 @@ function whyNot(item, action) {
     const info = state.versions[item.name];
     if (!item.thirdParty && action !== 'enable' && action !== 'disable') return '기본 내장 확장은 켜고 끄기만 돼요';
     if (item.thirdParty && !item.canManage) return '전역 확장은 관리자만 바꿀 수 있어요';
-    if (action === 'update' && info && info.noGit) return 'git으로 받은 확장이 아니라서 업데이트할 수 없어요';
+    if ((action === 'force' || action === 'rollback') && !state.plugin) return '서버 플러그인이 있을 때만 쓸 수 있어요';
+    if (action === 'rollback') return '되돌아갈 이전 버전 기록이 없어요';
+    if ((action === 'update' || action === 'force') && info && info.noGit) return 'git으로 받은 확장이 아니라서 업데이트할 수 없어요';
     if (action === 'disable' && item.isSelf) return '장바구니 자신은 여기서 끌 수 없어요';
     if (action === 'reinstall' && item.isSelf) return '장바구니 자신은 다시 설치할 수 없어요';
     if (action === 'reinstall') return '원격 주소를 몰라요. 먼저 업데이트 확인을 해 주세요';
     return '';
 }
 
+function matchesState(item) {
+    return item.disabled ? state.showOff : state.showOn;
+}
+
 function visibleItems() {
     const query = state.search.trim().toLowerCase();
     return state.items.filter(item => {
-        if (!item.thirdParty && !state.showSystem) return false;
         if (query && !item.title.toLowerCase().includes(query) && !item.folder.toLowerCase().includes(query)) return false;
-        switch (state.filter) {
-            case 'update': return hasUpdate(item);
-            case 'on': return !item.disabled;
-            case 'off': return item.disabled;
-            case 'cart': return state.cart.has(item.name);
-            default: return true;
-        }
+        // "in the cart" always shows everything that was picked, whatever the other switches say
+        if (state.filter === 'cart') return state.cart.has(item.name);
+        if (!item.thirdParty && !state.showSystem) return false;
+        if (!matchesState(item)) return false;
+        if (state.filter === 'update') return hasUpdate(item);
+        return true;
     }).sort((a, b) => Number(hasUpdate(b)) - Number(hasUpdate(a))); // updates first; the sort is stable, so names stay in order
 }
 
@@ -276,9 +294,49 @@ function serverBody(item, extra = {}) {
     return { extensionName: item.folder, global: item.type === 'global', ...extra };
 }
 
+/** Our plugin when it is installed, otherwise SillyTavern's own endpoint of the same name. */
+function api(name) {
+    return state.plugin ? `${PLUGIN_BASE}/${name}` : `/api/extensions/${name}`;
+}
+
+/** Looks for the optional server plugin once per page load. Without it everything works as before. */
+async function probePlugin() {
+    if (state.pluginProbed) return;
+    state.pluginProbed = true;
+    try {
+        const response = await fetch(`${PLUGIN_BASE}/probe`, { method: 'GET', headers: getRequestHeaders() });
+        const data = response.ok ? await response.json() : null;
+        state.plugin = data && data.ok === true ? data : null;
+    } catch {
+        state.plugin = null;
+    }
+}
+
+/** Puts the most common git messages into plain words; the original text stays after it. */
+function explainGit(message) {
+    const text = String(message || '');
+    if (/unrelated histories|Not possible to fast-forward|diverg/i.test(text)) {
+        return `원격 저장소와 내 폴더의 기록이 서로 어긋났어요. ⋯ 단추의 「강제 업데이트」로 맞출 수 있어요. (${text})`;
+    }
+    if (/would be overwritten|local changes/i.test(text)) {
+        return `확장 폴더 안의 파일이 직접 고쳐져 있어서 멈췄어요. 「강제 업데이트」는 고친 폴더를 백업해 두고 덮어써요. (${text})`;
+    }
+    if (/Could not read from remote|not found|does not appear to be a git repository|Authentication|could not read Username/i.test(text)) {
+        return `원격 저장소에 닿지 못했어요. 저장소가 지워졌거나 비공개가 됐을 수 있어요. (${text})`;
+    }
+    if (/Could not resolve host|timed out|did not answer in time|Failed to connect/i.test(text)) {
+        return `인터넷 연결 문제로 보여요. 잠시 뒤에 다시 해 보세요. (${text})`;
+    }
+    return text;
+}
+
 async function failText(response) {
     let text = '';
     try { text = (await response.text()).trim(); } catch { /* ignore */ }
+    try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed.error === 'string') return explainGit(parsed.error);
+    } catch { /* not JSON: SillyTavern's own endpoint */ }
     if (response.status === 500) {
         return '서버 오류 — 자세한 이유는 실리태번 서버 창(검은 창)에 나와요';
     }
@@ -287,7 +345,7 @@ async function failText(response) {
 
 async function fetchVersion(item) {
     try {
-        const response = await postJson('/api/extensions/version', serverBody(item));
+        const response = await postJson(api('version'), serverBody(item));
         if (!response.ok) {
             state.versions[item.name] = { error: await failText(response), at: Date.now() };
             return;
@@ -298,7 +356,10 @@ async function fetchVersion(item) {
             remoteUrl: String(data.remoteUrl || ''),
             branch: String(data.currentBranchName || ''),
             commit: String(data.currentCommitHash || ''),
-            noGit: !data.currentCommitHash && !data.remoteUrl,
+            noGit: Boolean(data.noGit) || (!data.currentCommitHash && !data.remoteUrl),
+            canRollback: Boolean(data.canRollback),
+            prevCommit: String(data.prevCommit || ''),
+            dirty: Boolean(data.dirty),
             at: Date.now(),
         };
     } catch (error) {
@@ -317,7 +378,7 @@ async function checkVersions(force, onlyItems = null) {
     state.checkTotal = candidates.length;
     renderStatus();
     try {
-        await runPool(candidates, CHECK_POOL_SIZE, async (item) => {
+        await runPool(candidates, state.plugin ? PLUGIN_CHECK_POOL_SIZE : CHECK_POOL_SIZE, async (item) => {
             await fetchVersion(item);
             state.checkDone++;
             saveCache();
@@ -359,22 +420,51 @@ async function callHook(item, hookName) {
 
 // Each do* function returns { status: 'ok' | 'same' | 'fail', detail: string }
 
-async function doUpdate(item) {
+async function doUpdate(item, force = false) {
     try {
-        const response = await postJson('/api/extensions/update', serverBody(item));
+        const response = await postJson(api('update'), serverBody(item, force ? { force: true } : {}));
         if (!response.ok) {
             return { status: 'fail', detail: await failText(response) };
         }
         const data = await response.json();
         const previous = state.versions[item.name] || {};
-        state.versions[item.name] = { ...previous, isUpToDate: true, error: undefined, remoteUrl: String(data.remoteUrl || previous.remoteUrl || ''), at: Date.now() };
-        if (data.isUpToDate) {
+        const changed = !data.isUpToDate;
+        state.versions[item.name] = {
+            ...previous,
+            isUpToDate: true,
+            error: undefined,
+            remoteUrl: String(data.remoteUrl || previous.remoteUrl || ''),
+            canRollback: state.plugin ? (changed || Boolean(previous.canRollback)) : false,
+            dirty: false,
+            at: Date.now(),
+        };
+        if (!changed) {
             return { status: 'same', detail: '이미 최신이에요' };
         }
         await callHook(item, 'update');
-        return { status: 'ok', detail: `→ ${data.shortCommitHash || '새 버전'}` };
+        const backup = data.backupPath ? ` · 고친 폴더 백업: ${data.backupPath}` : '';
+        return { status: 'ok', detail: `→ ${data.shortCommitHash || '새 버전'}${backup}` };
     } catch (error) {
         console.error(LOG, 'Update failed', item.name, error);
+        return { status: 'fail', detail: '서버에 연결하지 못했어요' };
+    }
+}
+
+/** Server plugin only: go back to the commit the extension was on before its last update. */
+async function doRollback(item) {
+    try {
+        const response = await postJson(`${PLUGIN_BASE}/rollback`, serverBody(item));
+        if (!response.ok) {
+            return { status: 'fail', detail: await failText(response) };
+        }
+        const data = await response.json();
+        const previous = state.versions[item.name] || {};
+        state.versions[item.name] = { ...previous, isUpToDate: false, canRollback: true, dirty: false, at: Date.now() };
+        await callHook(item, 'update');
+        const backup = data.backupPath ? ` · 고친 폴더 백업: ${data.backupPath}` : '';
+        return { status: 'ok', detail: `→ ${data.shortCommitHash || '이전 버전'}${backup}` };
+    } catch (error) {
+        console.error(LOG, 'Rollback failed', item.name, error);
         return { status: 'fail', detail: '서버에 연결하지 못했어요' };
     }
 }
@@ -400,7 +490,7 @@ async function doToggle(item, enable) {
 async function doDelete(item) {
     try {
         await callHook(item, 'delete');
-        const response = await postJson('/api/extensions/delete', serverBody(item));
+        const response = await postJson(api('delete'), serverBody(item));
         if (!response.ok) {
             return { status: 'fail', detail: await failText(response) };
         }
@@ -421,7 +511,7 @@ async function doReinstall(item) {
     }
     const url = info.remoteUrl;
     try {
-        const deleted = await postJson('/api/extensions/delete', serverBody(item));
+        const deleted = await postJson(api('delete'), serverBody(item));
         if (!deleted.ok) {
             return { status: 'fail', detail: `삭제 단계에서 실패: ${await failText(deleted)}` };
         }
@@ -494,13 +584,13 @@ function cartSummary() {
 }
 
 async function confirmApply(entries) {
-    const risky = entries.filter(entry => ['delete', 'disable', 'reinstall'].includes(entry.action));
+    const risky = entries.filter(entry => ['delete', 'disable', 'reinstall', 'force', 'rollback'].includes(entry.action));
     const warnings = collectWarnings();
     if (risky.length === 0 && warnings.length === 0) return true;
 
     const { Popup, POPUP_RESULT } = SillyTavern.getContext();
     const parts = [];
-    for (const action of ['delete', 'reinstall', 'disable']) {
+    for (const action of ['delete', 'reinstall', 'force', 'rollback', 'disable']) {
         const names = risky.filter(entry => entry.action === action).map(entry => esc(entry.item.title));
         if (names.length > 0) {
             parts.push(`<p style="text-align:left"><b>${ACTION_LABEL[action]} ${names.length}개</b><br>${names.join(', ')}</p>`);
@@ -511,6 +601,9 @@ async function confirmApply(entries) {
     }
     if (risky.some(entry => entry.action === 'reinstall')) {
         parts.push('<p style="text-align:left">다시 설치는 폴더를 지우고 새로 받아요. 폴더 안에 따로 저장된 파일은 사라지고, 설치가 실패하면 확장이 지워진 채로 남아요.</p>');
+    }
+    if (risky.some(entry => entry.action === 'force' || entry.action === 'rollback')) {
+        parts.push('<p style="text-align:left">강제 업데이트와 이전 버전으로 되돌리기는 확장 폴더 안에서 직접 고친 내용을 버려요. 고친 파일이 있으면 먼저 backups/ext-cart 폴더에 통째로 복사해 둬요.</p>');
     }
     if (warnings.length > 0) {
         parts.push(`<p style="text-align:left"><b>주의</b><br>${warnings.map(esc).join('<br>')}</p>`);
@@ -565,7 +658,8 @@ async function applyCart() {
         const mine = entries.filter(entry => entry.item.isSelf);
 
         // 1) updates, a few at a time
-        await runPool(others.filter(entry => entry.action === 'update'), POOL_SIZE, entry => run(entry, doUpdate));
+        await runPool(others.filter(entry => entry.action === 'update' || entry.action === 'force'), POOL_SIZE, entry => run(entry, item => doUpdate(item, entry.action === 'force')));
+        for (const entry of others.filter(e => e.action === 'rollback')) await run(entry, doRollback);
         // 2) enable / disable, one by one (each call saves settings)
         for (const entry of others.filter(e => e.action === 'enable')) await run(entry, item => doToggle(item, true));
         for (const entry of others.filter(e => e.action === 'disable')) await run(entry, item => doToggle(item, false));
@@ -574,7 +668,8 @@ async function applyCart() {
         for (const entry of others.filter(e => e.action === 'delete')) await run(entry, doDelete);
         // 4) this extension itself goes last
         for (const entry of mine) {
-            if (entry.action === 'update') await run(entry, doUpdate);
+            if (entry.action === 'update' || entry.action === 'force') await run(entry, item => doUpdate(item, entry.action === 'force'));
+            else if (entry.action === 'rollback') await run(entry, doRollback);
             else if (entry.action === 'enable') await run(entry, item => doToggle(item, true));
             else if (entry.action === 'delete') await run(entry, doDelete);
         }
@@ -611,7 +706,6 @@ function createRoot() {
 
     const head = el('div', { cls: 'extcart-head' }, [
         el('div', { cls: 'extcart-title', text: '확장 장바구니' }),
-        el('button', { cls: 'extcart-btn', type: 'button', title: '켜기/끄기 묶음', onclick: () => showPresets() }, [icon('fa-layer-group'), el('span', { text: '묶음' })]),
         el('button', { cls: 'extcart-btn extcart-icononly', type: 'button', title: '설정', 'aria-label': '설정', onclick: () => showSettings() }, [icon('fa-gear')]),
         el('button', { cls: 'extcart-btn extcart-icononly', type: 'button', title: '닫기', 'aria-label': '닫기', onclick: () => closeCart() }, [icon('fa-xmark')]),
     ]);
@@ -625,10 +719,10 @@ function createRoot() {
     const tools = el('div', { cls: 'extcart-tools' }, [
         search,
         el('div', { cls: 'extcart-chips' }),
+        el('div', { cls: 'extcart-checks' }),
         el('div', { cls: 'extcart-bulk' }, [
-            el('button', { cls: 'extcart-btn', type: 'button', onclick: () => addUpdates(false) }, [icon('fa-arrow-up'), el('span', { text: '업데이트 있는 것 담기' })]),
+            el('button', { cls: 'extcart-btn', type: 'button', onclick: () => addUpdates(false) }, [icon('fa-circle-up'), el('span', { text: '업데이트 있는 것 담기' })]),
             el('button', { cls: 'extcart-btn', type: 'button', onclick: () => addUpdates(true) }, [el('span', { text: '전체 업데이트 담기' })]),
-            el('button', { cls: 'extcart-btn', type: 'button', onclick: () => { state.cart.clear(); renderAll(); } }, [el('span', { text: '비우기' })]),
         ]),
         el('div', { cls: 'extcart-status-row' }, [
             el('div', { cls: 'extcart-status' }),
@@ -643,6 +737,7 @@ function createRoot() {
         el('div', { cls: 'extcart-list' }),
         el('div', { cls: 'extcart-foot' }, [
             el('div', { cls: 'extcart-foot-text' }),
+            el('button', { cls: 'extcart-btn extcart-small extcart-clear', type: 'button', title: '담은 것 모두 빼기', onclick: () => { if (!state.busy) { state.cart.clear(); renderAll(); } } }, [el('span', { text: '비우기' })]),
             el('button', { cls: 'extcart-btn extcart-primary extcart-apply', type: 'button', onclick: () => applyCart() }, [el('span', { text: '적용' })]),
         ]),
         el('div', { cls: 'extcart-sheet-wrap' }),
@@ -675,9 +770,11 @@ function openCart() {
     state.open = true;
     root.hidden = false;
     renderAll();
-    if (getSettings().autoCheck) {
-        void checkVersions(false);
-    }
+    void probePlugin().then(() => {
+        if (!state.open) return;
+        if (state.plugin) renderList();
+        if (getSettings().autoCheck) void checkVersions(false);
+    });
 }
 
 function closeCart() {
@@ -707,14 +804,13 @@ function renderBanner() {
 }
 
 function renderChips() {
-    const box = root.querySelector('.extcart-chips');
     const base = state.items.filter(item => item.thirdParty || state.showSystem);
+    const shown = base.filter(matchesState);
+    const box = root.querySelector('.extcart-chips');
     const chips = [
-        ['all', '전체', base.length],
-        ['update', '업데이트 있음', base.filter(hasUpdate).length],
-        ['on', '켜짐', base.filter(item => !item.disabled).length],
-        ['off', '꺼짐', base.filter(item => item.disabled).length],
-        ['cart', '담은 것', base.filter(item => state.cart.has(item.name)).length],
+        ['all', '전체', shown.length],
+        ['update', '업데이트 있음', shown.filter(hasUpdate).length],
+        ['cart', '담은 것', state.cart.size],
     ];
     box.replaceChildren();
     for (const [key, label, count] of chips) {
@@ -726,13 +822,27 @@ function renderChips() {
             onclick: () => { state.filter = key; saveView(); renderChips(); renderList(); },
         }));
     }
-    box.append(el('button', {
-        cls: `extcart-chip extcart-chip-alt${state.showSystem ? ' extcart-on' : ''}`,
+
+    // Check boxes that combine with the chips above (for example: "has update" + only enabled ones)
+    const checks = root.querySelector('.extcart-checks');
+    const check = (label, checked, onToggle) => el('button', {
+        cls: `extcart-check${checked ? ' extcart-on' : ''}`,
         type: 'button',
-        'aria-pressed': state.showSystem ? 'true' : 'false',
-        text: '기본 내장도 보기',
-        onclick: () => { state.showSystem = !state.showSystem; saveView(); renderChips(); renderList(); },
-    }));
+        role: 'checkbox',
+        'aria-checked': checked ? 'true' : 'false',
+        onclick: () => { onToggle(); saveView(); renderChips(); renderList(); },
+    }, [el('i', { cls: checked ? 'fa-solid fa-square-check fa-fw' : 'fa-regular fa-square fa-fw', 'aria-hidden': 'true' }), el('span', { text: label })]);
+    checks.replaceChildren(
+        check(`켜짐 ${base.filter(item => !item.disabled).length}`, state.showOn, () => {
+            state.showOn = !state.showOn;
+            if (!state.showOn && !state.showOff) state.showOff = true; // never hide both
+        }),
+        check(`꺼짐 ${base.filter(item => item.disabled).length}`, state.showOff, () => {
+            state.showOff = !state.showOff;
+            if (!state.showOn && !state.showOff) state.showOn = true;
+        }),
+        check('기본 내장', state.showSystem, () => { state.showSystem = !state.showSystem; }),
+    );
 }
 
 function renderStatus() {
@@ -750,6 +860,7 @@ function renderFoot() {
     const summary = cartSummary();
     root.querySelector('.extcart-foot-text').textContent = summary || '확장 옆 단추를 눌러 할 일을 담아 주세요.';
     root.querySelector('.extcart-apply').disabled = !summary;
+    root.querySelector('.extcart-clear').hidden = state.cart.size === 0;
 }
 
 function renderList() {
@@ -808,7 +919,7 @@ function buildRow(item) {
         actionButton(item, 'update', 'fa-arrow-up', '업데이트'),
         actionButton(item, toggleAction, 'fa-power-off', item.disabled ? '켜기' : '끄기'),
         actionButton(item, 'delete', 'fa-trash-can', '삭제'),
-        el('button', { cls: `extcart-act extcart-act-more${action === 'reinstall' ? ' extcart-on' : ''}`, type: 'button', title: '자세히 / 다시 설치', 'aria-label': `${item.title} 자세히`, onclick: () => showDetails(item.name) }, [icon('fa-ellipsis')]),
+        el('button', { cls: `extcart-act extcart-act-more${['reinstall', 'force', 'rollback'].includes(action) ? ' extcart-on' : ''}`, type: 'button', title: '자세히 / 그 밖의 일', 'aria-label': `${item.title} 자세히`, onclick: () => showDetails(item.name) }, [icon('fa-ellipsis')]),
     ]);
 
     const row = el('div', { cls: `extcart-row${hasUpdate(item) ? ' extcart-row-update' : ''}${action ? ' extcart-picked' : ''}${item.disabled ? ' extcart-row-off' : ''}` }, [
@@ -903,6 +1014,8 @@ function showDetails(name) {
         const checkText = info.error ? `실패 — ${info.error}` : info.at ? `${timeAgo(info.at)} · ${info.noGit ? 'git 아님' : info.isUpToDate ? '최신' : '업데이트 있음'}` : '아직 안 함';
         body.push(infoLine('업데이트 확인', checkText));
     }
+    if (info.dirty) body.push(infoLine('직접 고친 파일', '있음 (강제 업데이트·되돌리기 때 백업해 둬요)'));
+    if (state.plugin && info.canRollback && info.prevCommit) body.push(infoLine('이전 버전', info.prevCommit.slice(0, 7)));
     const deps = Array.isArray(item.manifest.dependencies) ? item.manifest.dependencies : [];
     if (deps.length > 0) body.push(infoLine('필요한 확장', deps.join(', ')));
 
@@ -911,6 +1024,10 @@ function showDetails(name) {
     const options = [
         ['update', 'fa-arrow-up', '업데이트'],
         [toggleAction, 'fa-power-off', item.disabled ? '켜기' : '끄기'],
+        ...(state.plugin ? [
+            ['force', 'fa-bolt', '강제 업데이트 (원격 최신 상태로 맞추기)'],
+            ['rollback', 'fa-clock-rotate-left', '이전 버전으로 되돌리기'],
+        ] : []),
         ['reinstall', 'fa-rotate-right', '다시 설치 (지우고 새로 받기)'],
         ['delete', 'fa-trash-can', '삭제'],
     ];
@@ -949,107 +1066,6 @@ function showDetails(name) {
     openSheet(item.title, body);
 }
 
-async function persistSettings() {
-    try {
-        await saveSettings();
-    } catch (error) {
-        console.error(LOG, 'saveSettings failed', error);
-        toastr.error('설정을 저장하지 못했어요.', '확장 장바구니');
-    }
-}
-
-function showPresets() {
-    if (state.busy) return;
-    const settings = getSettings();
-    const { Popup, POPUP_RESULT } = SillyTavern.getContext();
-    const body = [];
-
-    body.push(el('div', { cls: 'extcart-hint', text: '묶음은 어떤 확장이 켜져 있고 꺼져 있는지를 기억해요. 불러오면 달라지는 것만 장바구니에 담기고, 「적용」을 눌러야 바뀌어요.' }));
-
-    const snapshot = () => {
-        const known = state.items.map(item => item.name);
-        const disabled = state.items.filter(item => item.disabled).map(item => item.name);
-        return { known, disabled };
-    };
-
-    body.push(el('button', {
-        cls: 'extcart-btn extcart-wide extcart-primary',
-        type: 'button',
-        onclick: async () => {
-            const name = await Popup.show.input('새 묶음', '지금 켜짐·꺼짐 상태를 저장해요. 이름을 적어 주세요.', '');
-            const trimmed = typeof name === 'string' ? name.trim() : '';
-            if (!trimmed) return;
-            settings.presets.push({ name: trimmed, ...snapshot() });
-            await persistSettings();
-            showPresets();
-        },
-    }, [icon('fa-plus'), el('span', { text: '지금 상태를 새 묶음으로 저장' })]));
-
-    if (settings.presets.length === 0) {
-        body.push(el('div', { cls: 'extcart-empty', text: '저장한 묶음이 아직 없어요.' }));
-    }
-
-    settings.presets.forEach((preset, index) => {
-        const offCount = (preset.disabled || []).length;
-        const line = el('div', { cls: 'extcart-preset' }, [
-            el('div', { cls: 'extcart-info' }, [
-                el('div', { cls: 'extcart-name', text: preset.name }),
-                el('div', { cls: 'extcart-meta', text: `꺼짐 ${offCount}개 · 기억한 확장 ${(preset.known || []).length}개` }),
-            ]),
-            el('button', { cls: 'extcart-btn extcart-primary', type: 'button', onclick: () => loadPreset(preset) }, [el('span', { text: '불러오기' })]),
-            el('button', {
-                cls: 'extcart-btn', type: 'button', title: '지금 상태로 덮어쓰기',
-                onclick: async () => {
-                    const ok = await Popup.show.confirm('묶음 덮어쓰기', `「${esc(preset.name)}」을(를) 지금 상태로 바꿀까요?`);
-                    if (ok !== POPUP_RESULT.AFFIRMATIVE) return;
-                    Object.assign(preset, snapshot());
-                    await persistSettings();
-                    showPresets();
-                },
-            }, [icon('fa-floppy-disk')]),
-            el('button', {
-                cls: 'extcart-btn', type: 'button', title: '묶음 지우기',
-                onclick: async () => {
-                    const ok = await Popup.show.confirm('묶음 지우기', `「${esc(preset.name)}」을(를) 지울까요? 확장은 지워지지 않아요.`);
-                    if (ok !== POPUP_RESULT.AFFIRMATIVE) return;
-                    settings.presets.splice(index, 1);
-                    await persistSettings();
-                    showPresets();
-                },
-            }, [icon('fa-trash-can')]),
-        ]);
-        body.push(line);
-    });
-
-    openSheet('켜기/끄기 묶음', body);
-}
-
-/** Fill the cart with the enable/disable actions needed to reach the preset's state. */
-function loadPreset(preset) {
-    const known = new Set(preset.known || []);
-    const wantOff = new Set(preset.disabled || []);
-    let count = 0;
-    for (const item of state.items) {
-        if (!known.has(item.name) || item.isSelf) continue;
-        const current = state.cart.get(item.name);
-        // Keep update / delete / reinstall choices the user already made
-        if (current && current !== 'enable' && current !== 'disable') continue;
-        const shouldBeOff = wantOff.has(item.name);
-        if (shouldBeOff === item.disabled) {
-            state.cart.delete(item.name);
-        } else {
-            state.cart.set(item.name, shouldBeOff ? 'disable' : 'enable');
-            count++;
-        }
-    }
-    closeSheet();
-    state.filter = count > 0 ? 'cart' : state.filter;
-    state.showSystem = state.showSystem || [...state.cart.keys()].some(name => !name.startsWith(THIRD_PARTY));
-    renderAll();
-    if (count > 0) toastr.info(`켜기·끄기 ${count}개를 담았어요. 확인하고 「적용」을 눌러 주세요.`, preset.name);
-    else toastr.info('지금 상태가 이 묶음과 같아요.', preset.name);
-}
-
 function showResult(results) {
     const settings = getSettings();
     const okCount = (action) => results.filter(r => r.action === action && r.status !== 'fail').length;
@@ -1071,8 +1087,8 @@ function showResult(results) {
                 el('div', { text: r.detail || '이유를 알 수 없어요' }),
             ]));
         }
-        if (failed.some(r => r.action === 'update')) {
-            box.append(el('div', { cls: 'extcart-hint', text: '업데이트가 계속 실패하는 확장은 ⋯ 단추의 「다시 설치」를 써 볼 수 있어요.' }));
+        if (failed.some(r => r.action === 'update') && !failed.every(r => /강제 업데이트/.test(r.detail || ''))) {
+            box.append(el('div', { cls: 'extcart-hint', text: state.plugin ? '업데이트가 계속 실패하는 확장은 ⋯ 단추의 「강제 업데이트」를 써 볼 수 있어요.' : '업데이트가 계속 실패하는 확장은 ⋯ 단추의 「다시 설치」를 써 볼 수 있어요.' }));
         }
         body.push(box);
     }
@@ -1155,6 +1171,7 @@ function showSettings() {
         el('label', { cls: 'extcart-setting', for: 'extcart_auto_check' }, [autoCheck, el('span', { text: '열 때 오래된 업데이트 확인을 자동으로 다시 하기' })]),
         el('label', { cls: 'extcart-setting', for: 'extcart_ttl' }, [el('span', { text: '업데이트 확인 결과 기억 시간 (시간)' }), ttl]),
         el('div', { cls: 'extcart-hint', text: '0으로 두면 열 때마다 전부 다시 확인해요. 바꾼 값은 바로 저장돼요.' }),
+        el('div', { cls: 'extcart-hint', text: state.plugin ? `서버 플러그인: 연결됨 (v${state.plugin.version || '?'}${state.plugin.gitAvailable === false ? ', 서버에 git 없음' : ''})` : '서버 플러그인: 없음 (선택 사항 — 없어도 기본 기능은 다 돼요)' }),
         el('div', { cls: 'extcart-hint', text: '여는 곳: 입력창 왼쪽 햄버거(≡) 메뉴 맨 아래, 또는 슬래시 명령 /extcart' }),
     ]);
 }

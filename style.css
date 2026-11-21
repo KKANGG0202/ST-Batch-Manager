@@ -170,21 +170,60 @@ body.salty #extcart_root {
     font-size: 16px; /* 16px keeps mobile browsers from zooming in on focus */
 }
 
-#extcart_root :is(.extcart-chips, .extcart-bulk) {
+#extcart_root :is(.extcart-chips, .extcart-checks, .extcart-bulk) {
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
-    overflow-x: auto;
-    scrollbar-width: none;
-    padding-bottom: 1px;
 }
 
-#extcart_root :is(.extcart-chips, .extcart-bulk)::-webkit-scrollbar {
-    display: none;
-}
-
-#extcart_root :is(.extcart-chip, .extcart-bulk .extcart-btn) {
+#extcart_root .extcart-chip {
     flex: none;
     white-space: nowrap !important;
+}
+
+/* The two "add to cart" buttons share one row and may wrap their text instead of scrolling sideways */
+#extcart_root .extcart-bulk .extcart-btn {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 6px 8px !important;
+    font-size: 13.5px;
+    line-height: 1.25;
+}
+
+/* Check boxes: enabled / disabled / built-in */
+#extcart_root .extcart-check {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 36px;
+    margin: 0 !important;
+    padding: 4px 10px 4px 6px !important;
+    font: inherit;
+    font-size: 14px;
+    color: var(--xc-muted) !important;
+    background: transparent !important;
+    border: 1px solid transparent !important;
+    border-radius: 6px !important;
+    cursor: pointer;
+    white-space: nowrap !important;
+}
+
+#extcart_root .extcart-check i {
+    font-size: 18px;
+}
+
+#extcart_root .extcart-check.extcart-on {
+    color: var(--xc-fg) !important;
+}
+
+#extcart_root .extcart-check.extcart-on i {
+    color: var(--xc-accent);
+}
+
+#extcart_root .extcart-check:focus-visible {
+    outline: 2px solid var(--xc-accent);
+    outline-offset: 2px;
 }
 
 #extcart_root .extcart-chip {
@@ -336,7 +375,7 @@ body.salty #extcart_root {
 #extcart_root .extcart-tag-fail { border-color: var(--xc-danger); color: var(--xc-danger); }
 #extcart_root .extcart-tag-run { border-style: dashed; }
 #extcart_root .extcart-tag-pick { background: var(--xc-accent); border-color: var(--xc-accent); color: var(--xc-on-accent); font-weight: 700; }
-#extcart_root .extcart-tag-pick:is(.extcart-pick-delete, .extcart-pick-reinstall) { background: var(--xc-danger); border-color: var(--xc-danger); color: #fff; }
+#extcart_root .extcart-tag-pick:is(.extcart-pick-delete, .extcart-pick-reinstall, .extcart-pick-force, .extcart-pick-rollback) { background: var(--xc-danger); border-color: var(--xc-danger); color: #fff; }
 
 #extcart_root .extcart-acts {
     display: flex;
@@ -388,6 +427,10 @@ body.salty #extcart_root {
     flex: 1 1 auto;
     min-width: 0;
     font-size: 13.5px;
+}
+
+#extcart_root .extcart-clear {
+    min-height: 40px;
 }
 
 #extcart_root .extcart-apply {
