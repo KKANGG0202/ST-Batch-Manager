@@ -1097,6 +1097,10 @@ function showDetails(name) {
             if (reason) buttons.append(el('div', { cls: 'extcart-hint', text: reason }));
         }
     }
+    // older copies of the plugin do not know this request yet
+    if (state.plugin && Array.isArray(state.plugin.features) && state.plugin.features.includes('changes') && item.thirdParty && !info.noGit) {
+        buttons.append(el('button', { cls: 'extcart-btn extcart-wide', type: 'button', onclick: () => showChanges(item.name) }, [icon('fa-list-ul'), el('span', { text: '바뀐 내용 보기' })]));
+    }
     if (item.thirdParty) {
         buttons.append(el('button', {
             cls: 'extcart-btn extcart-wide',
@@ -1114,6 +1118,48 @@ function showDetails(name) {
     }
     body.push(buttons);
     openSheet(item.title, body);
+}
+
+/** Server plugin only: the author's commit notes for what an update brings / what the last one brought. */
+async function showChanges(name) {
+    const item = findItem(name);
+    if (!item || !state.plugin) return;
+    const back = () => el('button', { cls: 'extcart-btn extcart-wide', type: 'button', onclick: () => showDetails(name) }, [icon('fa-arrow-left'), el('span', { text: '돌아가기' })]);
+    openSheet(`${item.title} — 바뀐 내용`, [el('div', { cls: 'extcart-hint', text: '불러오는 중…' })]);
+
+    let data = null;
+    let problem = '';
+    try {
+        const response = await postJson(`${PLUGIN_BASE}/changes`, serverBody(item), CHECK_TIMEOUT + 10000);
+        if (response.ok) data = await response.json();
+        else problem = await failText(response);
+    } catch (error) {
+        problem = connectError(error);
+    }
+    if (!state.open) return;
+
+    const body = [];
+    if (!data) {
+        body.push(el('div', { cls: 'extcart-result-list extcart-result-fail', text: problem || '불러오지 못했어요.' }));
+    } else {
+        const section = (title, commits, emptyText) => {
+            const box = el('div', { cls: 'extcart-result-list' }, [el('div', { cls: 'extcart-result-head', text: `${title}${commits.length > 0 ? ` (${commits.length}${commits.length >= (data.max || 30) ? '개 이상' : '개'})` : ''}` })]);
+            if (commits.length === 0) box.append(el('div', { cls: 'extcart-hint', text: emptyText }));
+            for (const commit of commits) {
+                box.append(el('div', { cls: 'extcart-change' }, [
+                    el('div', { text: commit.subject || '(메모 없음)' }),
+                    el('div', { cls: 'extcart-hint', text: `${commit.date || ''} · ${commit.hash || ''}` }),
+                ]));
+            }
+            return box;
+        };
+        if (data.fetchError) body.push(el('div', { cls: 'extcart-hint', text: `원격 확인에 실패해서 이미 받아 둔 정보만 보여요. (${explainGit(data.fetchError)})` }));
+        body.push(section('업데이트하면 받게 될 내용', Array.isArray(data.incoming) ? data.incoming : [], '새로 받을 내용이 없어요. 이미 최신이에요.'));
+        body.push(section('지난 업데이트 때 바뀐 내용', Array.isArray(data.last) ? data.last : [], data.hasPrev ? '기록된 변경이 없어요.' : '이 플러그인으로 업데이트한 기록이 아직 없어요.'));
+        body.push(el('div', { cls: 'extcart-hint', text: '여기 글은 확장을 만든 사람이 올릴 때 적은 메모 그대로예요.' }));
+    }
+    body.push(back());
+    openSheet(`${item.title} — 바뀐 내용`, body);
 }
 
 function showResult(results) {

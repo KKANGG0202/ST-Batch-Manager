@@ -369,13 +369,13 @@ body.salty #extcart_root {
     color: var(--xc-fg);
 }
 
-#extcart_root .extcart-tag-off { opacity: 0.75; }
+#extcart_root .extcart-meta .extcart-tag-off { opacity: 0.75; }
 #extcart_root .extcart-meta .extcart-tag-up { display: inline-flex; align-items: center; gap: 4px; background: var(--xc-ok); border-color: var(--xc-ok); color: #fff; font-weight: 700; }
-#extcart_root .extcart-tag-ok { border-color: var(--xc-ok); color: var(--xc-ok); }
-#extcart_root .extcart-tag-fail { border-color: var(--xc-danger); color: var(--xc-danger); }
-#extcart_root .extcart-tag-run { border-style: dashed; }
-#extcart_root .extcart-tag-pick { background: var(--xc-accent); border-color: var(--xc-accent); color: var(--xc-on-accent); font-weight: 700; }
-#extcart_root .extcart-tag-pick:is(.extcart-pick-delete, .extcart-pick-reinstall, .extcart-pick-force, .extcart-pick-rollback) { background: var(--xc-danger); border-color: var(--xc-danger); color: #fff; }
+#extcart_root .extcart-meta .extcart-tag-ok { border-color: var(--xc-ok); color: var(--xc-ok); }
+#extcart_root .extcart-meta .extcart-tag-fail { border-color: var(--xc-danger); color: var(--xc-danger); }
+#extcart_root .extcart-meta .extcart-tag-run { border-style: dashed; }
+#extcart_root .extcart-meta .extcart-tag-pick { background: var(--xc-accent); border-color: var(--xc-accent); color: var(--xc-on-accent); font-weight: 700; }
+#extcart_root .extcart-meta .extcart-tag-pick:is(.extcart-pick-delete, .extcart-pick-reinstall, .extcart-pick-force, .extcart-pick-rollback) { background: var(--xc-danger); border-color: var(--xc-danger); color: #fff; }
 
 #extcart_root .extcart-acts {
     display: flex;
@@ -532,6 +532,11 @@ body.salty #extcart_root {
 
 #extcart_root .extcart-result-fail {
     border-color: var(--xc-danger);
+}
+
+#extcart_root .extcart-change {
+    padding-top: 6px !important;
+    border-top: 1px solid var(--xc-border);
 }
 
 #extcart_root .extcart-result-head {

@@ -7,6 +7,7 @@
  *   - forced update (reset to the remote branch), with a safety copy of locally edited folders
  *   - "go back to the previous version" after an update
  *   - folder delete that also works on Windows (read-only .git files)
+ *   - a list of what an update brings (the commit notes of the extension's author)
  *
  * It only touches folders directly inside the extensions folders, only runs the `git` program
  * that is already installed, and never contacts anything except the extension's own git remote.
@@ -22,7 +23,8 @@ export const info = {
     description: 'Optional helper for the Extension Cart: forced update, rollback, clear error reasons, faster update checks.',
 };
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
+const MAX_CHANGES = 30;
 const GLOBAL_EXTENSIONS = 'public/scripts/extensions/third-party';
 const PREV_REF = 'refs/extcart/prev'; // remembers the commit an extension was on before the last update
 const GIT_TIMEOUT = 180000;
@@ -192,6 +194,16 @@ async function describe(ext) {
     };
 }
 
+/** Commit notes in a range, newest first: [{ hash, date, subject }] */
+async function listCommits(dir, range) {
+    const out = await gitOrNull(dir, ['log', `--max-count=${MAX_CHANGES}`, '--format=%h%x09%cs%x09%s', range]);
+    if (!out) return [];
+    return out.split(/\r?\n/).filter(Boolean).map(line => {
+        const [hash, date, ...rest] = line.split('\t');
+        return { hash, date, subject: rest.join(' ').slice(0, 300) };
+    });
+}
+
 /** Wraps a handler so every failure becomes `{ error: "reason" }` that the cart can show. */
 function route(handler) {
     return async (request, response) => {
@@ -210,7 +222,7 @@ export async function init(router) {
     gitAvailable = await new Promise(resolve => execFile('git', ['--version'], { windowsHide: true }, error => resolve(!error)));
 
     router.get('/probe', (_request, response) => {
-        response.json({ ok: true, version: VERSION, gitAvailable });
+        response.json({ ok: true, version: VERSION, gitAvailable, features: ['changes'] });
     });
 
     // Update check: one fetch, then compare with the remote branch
@@ -221,6 +233,27 @@ export async function init(router) {
         }
         await git(ext.dir, ['fetch', 'origin'], CHECK_TIMEOUT);
         return describe(ext);
+    }));
+
+    // What changed: "incoming" = what an update would bring, "last" = what the last update brought
+    router.post('/changes', route(async (request) => {
+        const ext = resolveExtension(request);
+        requireRepo(ext);
+        let fetchError = '';
+        try {
+            await git(ext.dir, ['fetch', 'origin'], CHECK_TIMEOUT);
+        } catch (error) {
+            fetchError = cleanMessage(error.message); // still show what is already known locally
+        }
+        const branch = (await gitOrNull(ext.dir, ['rev-parse', '--abbrev-ref', 'HEAD'])) || '';
+        const hasPrev = Boolean(await gitOrNull(ext.dir, ['rev-parse', '-q', '--verify', PREV_REF]));
+        return {
+            incoming: branch && branch !== 'HEAD' ? await listCommits(ext.dir, `HEAD..origin/${branch}`) : [],
+            last: hasPrev ? await listCommits(ext.dir, `${PREV_REF}..HEAD`) : [],
+            hasPrev,
+            fetchError,
+            max: MAX_CHANGES,
+        };
     }));
 
     // Update. force=false: fast-forward only. force=true: make the folder equal to the remote branch.
