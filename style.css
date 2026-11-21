@@ -15,8 +15,7 @@
     --xc-warn: #d99a2b;
 }
 
-/* Blue Lemonade theme mode: borrow its palette. The root also carries data-bl-native-ext-colors,
-   so the theme's own recoloring rules leave these elements alone. */
+/* Full re-skin themes: follow the theme's own palette when it is present */
 body.salty #extcart_root {
     --xc-bg: var(--salty-surface, var(--salty-bg, var(--SmartThemeBlurTintColor, #fff)));
     --xc-fg: var(--salty-text, var(--SmartThemeBodyColor, #222));
@@ -27,8 +26,16 @@ body.salty #extcart_root {
 }
 
 #extcart_root.extcart-overlay {
+    /* ST puts a transform on <html>, so "fixed" is measured from <html>, and on phones <html> is 0px tall
+       (body is position: fixed). Never use inset/bottom/height:100% here: give the size in viewport units. */
     position: fixed;
-    inset: 0;
+    top: 0;
+    left: 0;
+    right: auto;
+    bottom: auto;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
     z-index: 30000;
     display: flex;
     align-items: center;
@@ -49,6 +56,7 @@ body.salty #extcart_root {
     display: flex;
     flex-direction: column;
     width: min(720px, 100vw);
+    height: min(860px, 100vh);
     height: min(860px, 100dvh);
     background-color: var(--xc-bg);
     -webkit-backdrop-filter: blur(14px);
@@ -491,6 +499,7 @@ body.salty #extcart_root {
 @media (max-width: 760px) {
     #extcart_root .extcart-panel {
         width: 100vw;
+        height: 100vh;
         height: 100dvh;
         border: 0;
         border-radius: 0;
