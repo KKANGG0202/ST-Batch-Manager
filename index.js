@@ -27,10 +27,10 @@ const LOG = '[ext-cart]';
 const CACHE_KEY = 'extcart_version_cache_v1';
 const THIRD_PARTY = 'third-party/';
 const POOL_SIZE = 3;  // how many updates run at the same time
-// Browsers open at most 6 connections to one server. Update checks must leave some free,
-// otherwise a few slow checks block every other request of SillyTavern.
-const CHECK_POOL_SIZE = 4;
-const PLUGIN_CHECK_POOL_SIZE = 5; // with the optional server plugin each check is lighter
+// Browsers open at most 6 connections to one server, so 6 is the useful maximum. A check that
+// never answers is dropped after CHECK_TIMEOUT, so it cannot block the others for long.
+const CHECK_POOL_SIZE = 6;
+const PLUGIN_CHECK_POOL_SIZE = 6; // with the optional server plugin each check is lighter
 const CHECK_TIMEOUT = 40000;      // give up on one update check after 40s
 const WORK_TIMEOUT = 300000;      // update / install / delete: 5 minutes
 const PLUGIN_BASE = '/api/plugins/ext-cart'; // optional server plugin (server-plugin folder)
@@ -776,6 +776,37 @@ function createRoot() {
     document.body.append(root);
 }
 
+/**
+ * Text on top of the theme's accent color ("apply" button, selected chip): pick black or white,
+ * whichever is easier to read on that accent. Themes that state their own on-accent color keep it.
+ */
+function fitAccentText() {
+    try {
+        root.style.removeProperty('--xc-on-accent');
+        if (getComputedStyle(document.body).getPropertyValue('--salty-on-accent').trim()) return;
+        const probe = el('span');
+        probe.style.cssText = 'position:absolute;visibility:hidden;color:var(--xc-accent)';
+        root.append(probe);
+        const colorText = getComputedStyle(probe).color;
+        probe.remove();
+        const isFraction = colorText.startsWith('color(');
+        const parts = (colorText.replace(/^color\(\s*[\w-]+/, '').match(/[\d.]+%?/g) || []).slice(0, 3);
+        if (parts.length < 3) return;
+        const channel = (value) => {
+            let v = value.endsWith('%') ? parseFloat(value) / 100 : parseFloat(value) / (isFraction ? 1 : 255);
+            v = Math.min(1, Math.max(0, v));
+            return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+        };
+        const luminance = 0.2126 * channel(parts[0]) + 0.7152 * channel(parts[1]) + 0.0722 * channel(parts[2]);
+        // contrast against white vs. against black
+        const withWhite = 1.05 / (luminance + 0.05);
+        const withBlack = (luminance + 0.05) / 0.05;
+        root.style.setProperty('--xc-on-accent', withBlack > withWhite ? '#111' : '#fff');
+    } catch (error) {
+        console.warn(LOG, 'Could not fit the accent text color', error);
+    }
+}
+
 function openCart() {
     createRoot();
     loadCache();
@@ -787,6 +818,7 @@ function openCart() {
     }
     state.open = true;
     root.hidden = false;
+    fitAccentText();
     renderAll();
     void probePlugin().then(() => {
         if (!state.open) return;
