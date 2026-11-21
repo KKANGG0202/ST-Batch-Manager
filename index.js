@@ -881,7 +881,7 @@ function renderChips() {
         role: 'checkbox',
         'aria-checked': checked ? 'true' : 'false',
         onclick: () => { onToggle(); saveView(); renderChips(); renderList(); },
-    }, [el('i', { cls: checked ? 'fa-solid fa-square-check fa-fw' : 'fa-regular fa-square fa-fw', 'aria-hidden': 'true' }), el('span', { text: label })]);
+    }, [el('span', { cls: 'extcart-box', 'aria-hidden': 'true' }, checked ? [el('i', { cls: 'fa-solid fa-check' })] : []), el('span', { text: label })]);
     checks.replaceChildren(
         check(`켜짐 ${base.filter(item => !item.disabled).length}`, state.showOn, () => {
             state.showOn = !state.showOn;
@@ -998,13 +998,14 @@ function addUpdates(all) {
     let added = 0;
     for (const item of state.items) {
         if (!item.thirdParty || !can(item, 'update') || state.cart.has(item.name)) continue;
-        if (!all && !hasUpdate(item)) continue;
+        // "add the ones with updates" follows the enabled / disabled check boxes; "add all" ignores them
+        if (!all && (!hasUpdate(item) || !matchesState(item))) continue;
         state.cart.set(item.name, 'update');
         added++;
     }
     renderAll();
     if (added === 0) {
-        toastr.info(all ? '더 담을 확장이 없어요.' : '업데이트가 있는 확장이 없어요. 「다시 확인」을 눌러 볼 수 있어요.', '확장 장바구니');
+        toastr.info(all ? '더 담을 확장이 없어요.' : '지금 보이는 확장 중에는 더 담을 업데이트가 없어요.', '확장 장바구니');
     }
 }
 

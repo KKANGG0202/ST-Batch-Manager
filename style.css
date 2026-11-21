@@ -209,16 +209,28 @@ body.salty #extcart_root {
     white-space: nowrap !important;
 }
 
-#extcart_root .extcart-check i {
-    font-size: 18px;
+/* The box is drawn with CSS: SillyTavern only ships the solid icon font, so an outlined icon would not show */
+#extcart_root .extcart-check .extcart-box {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border: 2px solid var(--xc-muted);
+    border-radius: 5px;
+    font-size: 12px;
+    line-height: 1;
 }
 
 #extcart_root .extcart-check.extcart-on {
     color: var(--xc-fg) !important;
 }
 
-#extcart_root .extcart-check.extcart-on i {
-    color: var(--xc-accent);
+#extcart_root .extcart-check.extcart-on .extcart-box {
+    background: var(--xc-accent);
+    border-color: var(--xc-accent);
+    color: var(--xc-on-accent);
 }
 
 #extcart_root .extcart-check:focus-visible {
