@@ -26,6 +26,7 @@ const VERSION = '1.0.0';
 const GLOBAL_EXTENSIONS = 'public/scripts/extensions/third-party';
 const PREV_REF = 'refs/extcart/prev'; // remembers the commit an extension was on before the last update
 const GIT_TIMEOUT = 180000;
+const CHECK_TIMEOUT = 30000; // update checks answer quickly or not at all
 const BACKUPS_TO_KEEP = 2;
 
 let gitAvailable = false;
@@ -46,11 +47,11 @@ function cleanMessage(text) {
  * Runs git inside one extension folder.
  * GIT_CEILING_DIRECTORIES keeps git from ever climbing up into a parent repository (SillyTavern itself).
  */
-function git(cwd, args) {
+function git(cwd, args, timeout = GIT_TIMEOUT) {
     return new Promise((resolve, reject) => {
         execFile('git', args, {
             cwd,
-            timeout: GIT_TIMEOUT,
+            timeout,
             windowsHide: true,
             maxBuffer: 8 * 1024 * 1024,
             env: {
@@ -218,7 +219,7 @@ export async function init(router) {
         if (!ext.isRepo || !gitAvailable) {
             return { currentBranchName: '', currentCommitHash: '', isUpToDate: true, remoteUrl: '', noGit: true };
         }
-        await git(ext.dir, ['fetch', 'origin']);
+        await git(ext.dir, ['fetch', 'origin'], CHECK_TIMEOUT);
         return describe(ext);
     }));
 

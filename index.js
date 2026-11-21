@@ -27,8 +27,12 @@ const LOG = '[ext-cart]';
 const CACHE_KEY = 'extcart_version_cache_v1';
 const THIRD_PARTY = 'third-party/';
 const POOL_SIZE = 3;  // how many updates run at the same time
-const CHECK_POOL_SIZE = 6; // how many update checks run at the same time (ST itself uses 5)
-const PLUGIN_CHECK_POOL_SIZE = 8; // with the optional server plugin each check is lighter
+// Browsers open at most 6 connections to one server. Update checks must leave some free,
+// otherwise a few slow checks block every other request of SillyTavern.
+const CHECK_POOL_SIZE = 4;
+const PLUGIN_CHECK_POOL_SIZE = 5; // with the optional server plugin each check is lighter
+const CHECK_TIMEOUT = 40000;      // give up on one update check after 40s
+const WORK_TIMEOUT = 300000;      // update / install / delete: 5 minutes
 const PLUGIN_BASE = '/api/plugins/ext-cart'; // optional server plugin (server-plugin folder)
 const VIEW_KEY = 'extcart_view_v1'; // remembered filter of this browser
 const HOOK_TIMEOUT = 5000;
@@ -282,12 +286,26 @@ function visibleItems() {
 // Server calls
 // ---------------------------------------------------------------------------
 
-async function postJson(url, body) {
-    return fetch(url, {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify(body),
-    });
+/** POST with a time limit, so one request the server never answers cannot block the others. */
+async function postJson(url, body, timeout = WORK_TIMEOUT) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+        return await fetch(url, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(body),
+            signal: controller.signal,
+        });
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function connectError(error) {
+    return error && error.name === 'AbortError'
+        ? '시간 초과 — 서버가 대답하지 않았어요. 저장소가 지워졌거나 인터넷이 느릴 수 있어요'
+        : '서버에 연결하지 못했어요';
 }
 
 function serverBody(item, extra = {}) {
@@ -345,7 +363,7 @@ async function failText(response) {
 
 async function fetchVersion(item) {
     try {
-        const response = await postJson(api('version'), serverBody(item));
+        const response = await postJson(api('version'), serverBody(item), CHECK_TIMEOUT);
         if (!response.ok) {
             state.versions[item.name] = { error: await failText(response), at: Date.now() };
             return;
@@ -364,7 +382,7 @@ async function fetchVersion(item) {
         };
     } catch (error) {
         console.warn(LOG, 'Version check failed for', item.name, error);
-        state.versions[item.name] = { error: '서버에 연결하지 못했어요', at: Date.now() };
+        state.versions[item.name] = { error: connectError(error), at: Date.now() };
     }
 }
 
@@ -446,7 +464,7 @@ async function doUpdate(item, force = false) {
         return { status: 'ok', detail: `→ ${data.shortCommitHash || '새 버전'}${backup}` };
     } catch (error) {
         console.error(LOG, 'Update failed', item.name, error);
-        return { status: 'fail', detail: '서버에 연결하지 못했어요' };
+        return { status: 'fail', detail: connectError(error) };
     }
 }
 
@@ -465,7 +483,7 @@ async function doRollback(item) {
         return { status: 'ok', detail: `→ ${data.shortCommitHash || '이전 버전'}${backup}` };
     } catch (error) {
         console.error(LOG, 'Rollback failed', item.name, error);
-        return { status: 'fail', detail: '서버에 연결하지 못했어요' };
+        return { status: 'fail', detail: connectError(error) };
     }
 }
 
@@ -499,7 +517,7 @@ async function doDelete(item) {
         return { status: 'ok', detail: '' };
     } catch (error) {
         console.error(LOG, 'Delete failed', item.name, error);
-        return { status: 'fail', detail: '서버에 연결하지 못했어요' };
+        return { status: 'fail', detail: connectError(error) };
     }
 }
 
