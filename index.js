@@ -211,7 +211,6 @@ function saveView() {
 function isStale(name) {
     const info = state.versions[name];
     if (!info || !info.at) return true;
-    if (info.error) return true; // a failed check is never "remembered": try it again next time
     const ttl = Math.max(0, Number(getSettings().ttlHours) || 0) * 3600000;
     return Date.now() - info.at > ttl;
 }
