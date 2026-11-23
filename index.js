@@ -211,6 +211,7 @@ function saveView() {
 function isStale(name) {
     const info = state.versions[name];
     if (!info || !info.at) return true;
+    if (info.error) return true; // a failed check is never "remembered": try it again next time
     const ttl = Math.max(0, Number(getSettings().ttlHours) || 0) * 3600000;
     return Date.now() - info.at > ttl;
 }
@@ -422,6 +423,23 @@ async function checkVersions(force, onlyItems = null) {
                 renderStatus();
             }
         });
+
+        // A short network stall makes every check that was running at that moment fail together.
+        // Give the failed ones one more calm try (two at a time) before showing them as failed.
+        const failed = candidates.filter(item => state.versions[item.name] && state.versions[item.name].error);
+        if (failed.length > 0 && failed.length < candidates.length) {
+            state.checkDone = candidates.length - failed.length;
+            renderStatus();
+            await runPool(failed, 2, async (item) => {
+                await fetchVersion(item);
+                state.checkDone++;
+                saveCache();
+                if (state.open) {
+                    updateRow(item.name);
+                    renderStatus();
+                }
+            });
+        }
     } finally {
         state.checking = false;
         if (state.open) {
